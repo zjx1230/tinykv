@@ -14,7 +14,11 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	"fmt"
+	"github.com/juju/errors"
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -73,23 +77,51 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	if l.stabled+1 >= uint64(len(l.entries)) {
+		return nil
+	}
+	return l.entries[l.stabled+1:]
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return nil
+	fmt.Printf("applied index: %d, committed index: %d\n", l.applied, l.committed)
+	if l.applied >= l.committed {
+		return nil
+	}
+	return l.entries[l.applied+1 : l.committed+1]
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return 0
+	if len(l.entries) == 0 {
+		return 0
+	}
+	return l.entries[len(l.entries)-1].Index
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return 0, nil
+	if i < uint64(len(l.entries)) {
+		return l.entries[i].Term, nil
+	}
+
+	return 0, errors.New("i index out of the entries")
+}
+
+// GetRealIndex get real index of the array of the entries
+func (l *RaftLog) GetRealIndex(index uint64) uint64 {
+	// TODO
+	return index
+}
+
+func (l *RaftLog) GetDataByIndex(index uint64) []byte {
+	realIndex := l.GetRealIndex(index)
+	if realIndex >= uint64(len(l.entries)) {
+		return nil
+	}
+	return l.entries[realIndex].Data
 }

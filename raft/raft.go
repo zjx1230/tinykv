@@ -180,6 +180,17 @@ func newRaft(c *Config) *Raft {
 		RaftLog:          newLog(c.Storage),
 		peers:            c.peers,
 		votes:            make(map[uint64]bool, 0),
+		Prs:              make(map[uint64]*Progress, 0),
+	}
+	// TODO from snapshot
+	for _, peer := range c.peers {
+		if peer == c.ID {
+			continue
+		}
+		raft.Prs[peer] = &Progress{
+			Match: 0,
+			Next:  0,
+		}
 	}
 	raft.electionTimeout = raft.electionTick + rand.Intn(10000)%c.ElectionTick
 	return raft
@@ -189,7 +200,30 @@ func newRaft(c *Config) *Raft {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	return false
+	if r.State != StateLeader {
+		return false
+	}
+
+	newEntries := make([]*pb.Entry, 0)
+	for _, e := range r.RaftLog.entries[r.RaftLog.GetRealIndex(r.Prs[to].Next):] {
+		newEntries = append(newEntries, &pb.Entry{
+			EntryType: pb.EntryType_EntryNormal,
+			Term:      e.Term,
+			Index:     e.Index,
+			Data:      r.RaftLog.GetDataByIndex(e.Index),
+		})
+	}
+
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgAppend,
+		To:      to,
+		From:    r.id,
+		LogTerm: r.Term,
+		Index:   r.RaftLog.entries[r.RaftLog.GetRealIndex(r.Prs[to].Match)].Index,
+		Entries: newEntries,
+		Commit:  r.RaftLog.committed,
+	})
+	return true
 }
 
 func (r *Raft) sendHeartBeat() {
@@ -268,9 +302,13 @@ func (r *Raft) becomeLeader() {
 	r.Vote = None
 	r.votes = make(map[uint64]bool, 0)
 	r.votesNum = 0
-	for _, id := range r.peers {
-		r.msgs = append(r.msgs, pb.Message{From: r.id, To: id, Term: r.Term, MsgType: pb.MessageType_MsgHeartbeat})
+	if len(r.RaftLog.entries) == 0 {
+		r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{EntryType: pb.EntryType_EntryNormal, Term: r.Term, Index: 0})
 	}
+
+	//for _, id := range r.peers {
+	//	r.msgs = append(r.msgs, pb.Message{From: r.id, To: id, Term: r.Term, MsgType: pb.MessageType_MsgHeartbeat})
+	//}
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -339,6 +377,30 @@ func (r *Raft) Step(m pb.Message) error {
 			r.msgs = append(r.msgs, new_msg)
 			return nil
 		}
+
+		if len(r.RaftLog.entries) == 0 {
+			for _, e := range m.Entries {
+				r.RaftLog.entries = append(r.RaftLog.entries, *e)
+			}
+		} else {
+			preLogIndex := r.RaftLog.GetRealIndex(m.Index)
+			if preLogIndex >= uint64(len(r.RaftLog.entries)) {
+				new_msg.Reject = true
+				new_msg.Index = r.RaftLog.LastIndex()
+				new_msg.LogTerm = r.RaftLog.entries[r.RaftLog.LastIndex()].Term
+			} else {
+				if r.RaftLog.entries[preLogIndex].Term != m.LogTerm {
+					new_msg.Reject = true
+					new_msg.Index = preLogIndex
+					new_msg.LogTerm = r.RaftLog.entries[preLogIndex].Term
+				} else {
+					for _, e := range m.Entries {
+						r.RaftLog.entries = append(r.RaftLog.entries[:preLogIndex+1], *e)
+					}
+				}
+			}
+		}
+
 		r.becomeFollower(m.Term, m.From)
 	}
 
@@ -360,6 +422,73 @@ func (r *Raft) Step(m pb.Message) error {
 			}
 		}
 	case StateLeader:
+		if m.MsgType == pb.MessageType_MsgAppendResponse {
+			if !m.Reject {
+				if m.Index == 1 && len(r.RaftLog.entries) == 1 { // noop entry response
+					m.Index = 0
+				}
+				r.Prs[m.From] = &Progress{Match: m.Index, Next: m.Index + 1}
+				cnt := 1
+				newCommitted := uint64(0)
+				for peer, p := range r.Prs {
+					if peer == r.id {
+						continue
+					}
+					if p.Match > r.RaftLog.committed {
+						cnt++
+						if newCommitted == 0 {
+							newCommitted = p.Match
+						} else {
+							newCommitted = min(p.Match, newCommitted)
+						}
+					}
+				}
+				if cnt > len(r.peers)/2 {
+					r.RaftLog.committed = newCommitted
+				}
+			} else {
+				// TODO
+			}
+		}
+
+		if m.MsgType == pb.MessageType_MsgPropose {
+			for _, e := range m.Entries {
+				r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{
+					EntryType: pb.EntryType_EntryNormal,
+					Term:      r.Term,
+					Index:     r.RaftLog.LastIndex() + 1,
+					Data:      e.Data,
+				})
+			}
+
+			for _, peer := range r.peers {
+				if peer == r.id {
+					continue
+				}
+
+				newAppendEntries := make([]*pb.Entry, 0)
+				for _, e := range r.RaftLog.entries[r.RaftLog.GetRealIndex(r.Prs[peer].Next):] {
+					newAppendEntries = append(newAppendEntries, &pb.Entry{
+						EntryType: pb.EntryType_EntryNormal,
+						Term:      e.Term,
+						Index:     e.Index,
+						Data:      e.Data,
+					})
+				}
+
+				r.msgs = append(r.msgs, pb.Message{
+					From:    r.id,
+					To:      peer,
+					Term:    r.Term,
+					MsgType: pb.MessageType_MsgAppend,
+					Index:   r.Prs[peer].Match,
+					LogTerm: r.RaftLog.entries[r.RaftLog.GetRealIndex(r.Prs[peer].Match)].Term,
+					Entries: newAppendEntries,
+					Commit:  r.RaftLog.committed,
+				})
+			}
+		}
+
 		if r.Term < m.Term {
 			r.State = StateFollower
 		} else {

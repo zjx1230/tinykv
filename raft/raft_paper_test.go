@@ -408,7 +408,6 @@ func TestLeaderCommitEntry2AB(t *testing.T) {
 	commitNoopEntry(r, s)
 	li := r.RaftLog.LastIndex()
 	r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
-
 	for _, m := range r.readMessages() {
 		r.Step(acceptAndReply(m))
 	}
