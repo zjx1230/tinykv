@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"fmt"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"math/rand"
 )
@@ -189,7 +190,7 @@ func newRaft(c *Config) *Raft {
 		}
 		raft.Prs[peer] = &Progress{
 			Match: 0,
-			Next:  0,
+			Next:  1,
 		}
 	}
 	raft.electionTimeout = raft.electionTick + rand.Intn(10000)%c.ElectionTick
@@ -214,6 +215,12 @@ func (r *Raft) sendAppend(to uint64) bool {
 		})
 	}
 
+	if len(newEntries) == 0 {
+		newEntries = append(newEntries, &pb.Entry{
+			Term:  r.Term,
+			Index: r.RaftLog.LastIndex() + 1,
+		})
+	}
 	r.msgs = append(r.msgs, pb.Message{
 		MsgType: pb.MessageType_MsgAppend,
 		To:      to,
@@ -302,10 +309,14 @@ func (r *Raft) becomeLeader() {
 	r.Vote = None
 	r.votes = make(map[uint64]bool, 0)
 	r.votesNum = 0
-	if len(r.RaftLog.entries) == 0 {
-		r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{EntryType: pb.EntryType_EntryNormal, Term: r.Term, Index: 0})
-	}
-
+	//if len(r.RaftLog.entries) == 0 {
+	//	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{EntryType: pb.EntryType_EntryNormal, Term: r.Term, Index: 0})
+	//}
+	r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{
+		EntryType: pb.EntryType_EntryNormal,
+		Term:      r.Term,
+		Index:     r.RaftLog.LastIndex() + 1,
+	})
 	//for _, id := range r.peers {
 	//	r.msgs = append(r.msgs, pb.Message{From: r.id, To: id, Term: r.Term, MsgType: pb.MessageType_MsgHeartbeat})
 	//}
@@ -424,9 +435,6 @@ func (r *Raft) Step(m pb.Message) error {
 	case StateLeader:
 		if m.MsgType == pb.MessageType_MsgAppendResponse {
 			if !m.Reject {
-				if m.Index == 1 && len(r.RaftLog.entries) == 1 { // noop entry response
-					m.Index = 0
-				}
 				r.Prs[m.From] = &Progress{Match: m.Index, Next: m.Index + 1}
 				cnt := 1
 				newCommitted := uint64(0)
@@ -445,6 +453,12 @@ func (r *Raft) Step(m pb.Message) error {
 				}
 				if cnt > len(r.peers)/2 {
 					r.RaftLog.committed = newCommitted
+					for r.RaftLog.committed > r.RaftLog.LastIndex() {
+						r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{
+							Term:  r.Term,
+							Index: r.RaftLog.LastIndex() + 1,
+						})
+					}
 				}
 			} else {
 				// TODO
@@ -461,12 +475,17 @@ func (r *Raft) Step(m pb.Message) error {
 				})
 			}
 
+			if len(r.peers) == 1 {
+				r.RaftLog.committed = r.RaftLog.LastIndex()
+			}
+
 			for _, peer := range r.peers {
 				if peer == r.id {
 					continue
 				}
 
 				newAppendEntries := make([]*pb.Entry, 0)
+				fmt.Printf("len: %d, next: %d\n", len(r.RaftLog.entries), r.Prs[peer].Next)
 				for _, e := range r.RaftLog.entries[r.RaftLog.GetRealIndex(r.Prs[peer].Next):] {
 					newAppendEntries = append(newAppendEntries, &pb.Entry{
 						EntryType: pb.EntryType_EntryNormal,

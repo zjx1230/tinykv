@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"github.com/juju/errors"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"log"
 )
 
 // RaftLog manage the log entries, its struct look like:
@@ -62,8 +63,26 @@ func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
 	raftLog := &RaftLog{
 		storage: storage,
-		entries: make([]pb.Entry, 0),
+		entries: make([]pb.Entry, 1),
 	}
+	firstIndex, err := storage.FirstIndex()
+	if err != nil {
+		log.Printf("[newLog] firstIndex: %v\n", err)
+		return raftLog
+	}
+
+	endIndex, err := storage.LastIndex()
+	if err != nil {
+		log.Printf("[newLog] endIndex, err: %v\n", err)
+		return raftLog
+	}
+
+	newEntries, err := storage.Entries(firstIndex, endIndex+1)
+	if err != nil {
+		log.Printf("[newLog] storage.Entries, err: %v\n", err)
+		return raftLog
+	}
+	raftLog.entries = append(raftLog.entries, newEntries...)
 	return raftLog
 }
 
