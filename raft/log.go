@@ -63,7 +63,7 @@ func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
 	raftLog := &RaftLog{
 		storage: storage,
-		entries: make([]pb.Entry, 1),
+		entries: make([]pb.Entry, 0),
 	}
 	firstIndex, err := storage.FirstIndex()
 	if err != nil {
@@ -83,6 +83,7 @@ func newLog(storage Storage) *RaftLog {
 		return raftLog
 	}
 	raftLog.entries = append(raftLog.entries, newEntries...)
+	raftLog.stabled = raftLog.LastIndex()
 	return raftLog
 }
 
@@ -96,20 +97,46 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	if l.stabled+1 >= uint64(len(l.entries)) {
+	if len(l.entries) == 0 {
 		return nil
 	}
-	return l.entries[l.stabled+1:]
+
+	if l.stabled == 0 {
+		return l.entries
+	}
+
+	unStableIndex := l.GetRealIndex(l.stabled)
+	if unStableIndex+1 >= uint64(len(l.entries)) {
+		return []pb.Entry{}
+	}
+	return l.entries[unStableIndex+1:]
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
 	fmt.Printf("applied index: %d, committed index: %d\n", l.applied, l.committed)
-	if l.applied >= l.committed {
+	if len(l.entries) == 0 {
 		return nil
 	}
-	return l.entries[l.applied+1 : l.committed+1]
+	realApplied := l.GetRealIndex(l.applied)
+	realCommitted := l.GetRealIndex(l.committed)
+	if l.applied == 0 { // not applied
+		return l.entries[realApplied : realCommitted+1]
+	}
+
+	if realApplied >= realCommitted {
+		return nil
+	}
+	return l.entries[realApplied+1 : realCommitted+1]
+}
+
+// LastTerm return the last term of the log entries
+func (l *RaftLog) LastTerm() uint64 {
+	if len(l.entries) == 0 {
+		return 0
+	}
+	return l.entries[len(l.entries)-1].Term
 }
 
 // LastIndex return the last index of the log entries
@@ -124,8 +151,13 @@ func (l *RaftLog) LastIndex() uint64 {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	if i < uint64(len(l.entries)) {
-		return l.entries[i].Term, nil
+	if i == 0 {
+		return 0, nil
+	}
+
+	index := l.GetRealIndex(i)
+	if index < uint64(len(l.entries)) {
+		return l.entries[index].Term, nil
 	}
 
 	return 0, errors.New("i index out of the entries")
@@ -134,7 +166,10 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 // GetRealIndex get real index of the array of the entries
 func (l *RaftLog) GetRealIndex(index uint64) uint64 {
 	// TODO
-	return index
+	if len(l.entries) == 0 || index == 0 {
+		return 0
+	}
+	return index - l.entries[0].Index
 }
 
 func (l *RaftLog) GetDataByIndex(index uint64) []byte {
