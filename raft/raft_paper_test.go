@@ -916,7 +916,7 @@ func acceptAndReply(m pb.Message) pb.Message {
 	if m.MsgType != pb.MessageType_MsgAppend {
 		panic("type should be MessageType_MsgAppend")
 	}
-	fmt.Printf("index: %d, len: %d\n", m.Index, uint64(len(m.Entries)))
+
 	// Note: reply message don't contain LogTerm
 	return pb.Message{
 		From:    m.To,
