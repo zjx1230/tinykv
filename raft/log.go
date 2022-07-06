@@ -130,6 +130,15 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	return l.entries[realApplied+1 : realCommitted+1]
 }
 
+// GetCommittedEntries return the committed log entries that don't contain the snapshot
+func (l *RaftLog) GetCommittedEntries() []pb.Entry {
+	if len(l.entries) == 0 {
+		return nil
+	}
+
+	return l.entries[:l.GetRealIndex(l.committed)+1]
+}
+
 // LastTerm return the last term of the log entries
 func (l *RaftLog) LastTerm() uint64 {
 	if len(l.entries) == 0 {

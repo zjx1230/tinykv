@@ -203,6 +203,14 @@ func newRaft(c *Config) *Raft {
 	return raft
 }
 
+func (r *Raft) GetHardState() pb.HardState {
+	hardState, _, err := r.RaftLog.storage.InitialState()
+	if err != nil {
+		panic(err)
+	}
+	return hardState
+}
+
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
@@ -306,6 +314,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
+	r.Lead = None
 	r.Term++
 	r.Vote = r.id
 	r.votes = make(map[uint64]bool, 0)
@@ -320,6 +329,7 @@ func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
+	r.Lead = r.id
 	r.Vote = None
 	r.votes = make(map[uint64]bool, 0)
 	r.votesNum = 0
@@ -433,7 +443,7 @@ func (r *Raft) handleMsgHeartbeatResponse(m pb.Message) {
 func (r *Raft) handleMsgPropose(m pb.Message) {
 	for _, e := range m.Entries {
 		r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{
-			EntryType: pb.EntryType_EntryNormal,
+			EntryType: e.EntryType,
 			Term:      r.Term,
 			Index:     r.RaftLog.LastIndex() + 1,
 			Data:      e.Data,
@@ -564,6 +574,7 @@ func (r *Raft) handleMsgRequestVote(m pb.Message) {
 		if r.Term == m.Term && r.Vote != None && r.Vote != m.From {
 			newMsg.Reject = true
 		} else {
+			r.becomeFollower(m.Term, None)
 			r.Vote = m.From
 		}
 	} else {
