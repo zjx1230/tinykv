@@ -3,7 +3,6 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/Connor1996/badger"
@@ -321,60 +320,73 @@ func (ps *PeerStorage) appendEntry(e eraftpb.Entry) error {
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
+	err := ps.Engines.WriteRaft(raftWB)
+	if err != nil {
+		return err
+	}
+
 	if len(entries) == 0 {
 		return nil
 	}
-	needTruncate := false
-	if entries[0].Index > ps.raftState.LastIndex && entries[0].Term >= ps.raftState.LastTerm { // direct append
-		for _, e := range entries {
-			err := ps.appendEntry(e)
-			if err != nil {
-				return err
-			}
-		}
-	} else {
-		for _, e := range entries {
-			key := meta.RaftLogKey(ps.region.Id, e.Index)
-			err := ps.Engines.Raft.View(func(txn *badger.Txn) error {
-				item, err := txn.Get(key)
-				if err != nil {
-					fmt.Printf("err : %v\n", err)
-					return err
-				}
-				value, err := item.Value()
-				if err != nil {
-					return err
-				}
-				var entry eraftpb.Entry
-				proto.Unmarshal(value, &entry)
-				if entry.Term < e.Term {
-					return errors.New("truncate")
-				}
-				return nil
-			})
 
-			if err != nil {
-				if !needTruncate && strings.HasPrefix(err.Error(), "truncate") {
-					needTruncate = true
-				}
-				err = ps.appendEntry(e)
-				if err != nil {
-					return err
-				}
-			}
-		}
-
-		if needTruncate && entries[len(entries)-1].Index < ps.raftState.LastIndex {
-			ps.raftState.LastIndex = entries[len(entries)-1].Index
-			ps.raftState.LastTerm = entries[len(entries)-1].Term
-			for i := entries[len(entries)-1].Index + 1; i <= ps.raftState.LastIndex; i++ {
-				key := meta.RaftLogKey(ps.region.Id, i)
-				ps.Engines.Raft.Update(func(txn *badger.Txn) error {
-					return txn.Delete(key)
-				})
-			}
+	for _, e := range entries {
+		err := ps.appendEntry(e)
+		if err != nil {
+			return err
 		}
 	}
+	//needTruncate := false
+	//if entries[0].Index > ps.raftState.LastIndex && entries[0].Term >= ps.raftState.LastTerm { // direct append
+	//	for _, e := range entries {
+	//		err := ps.appendEntry(e)
+	//		if err != nil {
+	//			return err
+	//		}
+	//	}
+	//} else {
+	//	for _, e := range entries {
+	//		key := meta.RaftLogKey(ps.region.Id, e.Index)
+	//		err := ps.Engines.Raft.View(func(txn *badger.Txn) error {
+	//			item, err := txn.Get(key)
+	//			if err != nil {
+	//				fmt.Printf("err : %v\n", err)
+	//				return err
+	//			}
+	//			value, err := item.Value()
+	//			if err != nil {
+	//				return err
+	//			}
+	//			var entry eraftpb.Entry
+	//			proto.Unmarshal(value, &entry)
+	//			if entry.Term < e.Term {
+	//				return errors.New("truncate")
+	//			}
+	//			return nil
+	//		})
+	//
+	//		if err != nil {
+	//			if !needTruncate && strings.HasPrefix(err.Error(), "truncate") {
+	//				needTruncate = true
+	//			}
+	//			err = ps.appendEntry(e)
+	//			if err != nil {
+	//				return err
+	//			}
+	//		}
+	//	}
+	//
+	//	if needTruncate && entries[len(entries)-1].Index < ps.raftState.LastIndex {
+	//		fmt.Printf("oooooooo\n")
+	//		ps.raftState.LastIndex = entries[len(entries)-1].Index
+	//		ps.raftState.LastTerm = entries[len(entries)-1].Term
+	//		for i := entries[len(entries)-1].Index + 1; i <= ps.raftState.LastIndex; i++ {
+	//			key := meta.RaftLogKey(ps.region.Id, i)
+	//			ps.Engines.Raft.Update(func(txn *badger.Txn) error {
+	//				return txn.Delete(key)
+	//			})
+	//		}
+	//	}
+	//}
 
 	if entries[len(entries)-1].Index > ps.raftState.LastIndex {
 		ps.raftState.LastIndex = entries[len(entries)-1].Index
@@ -403,8 +415,25 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
-	//ready.Entries
-	return nil, nil
+	// TODO
+	if len(ready.Entries) == 0 {
+		return nil, nil
+	}
+	writeBatch := new(engine_util.WriteBatch)
+	var res *ApplySnapResult
+	err := writeBatch.SetMeta(meta.RaftStateKey(ps.region.Id), &rspb.RaftLocalState{
+		HardState: &ready.HardState,
+		LastIndex: ready.Entries[len(ready.Entries)-1].Index,
+	})
+	if err != nil {
+		return res, err
+	}
+
+	err = ps.Append(ready.Entries, writeBatch)
+	if err != nil {
+		return res, err
+	}
+	return res, nil
 }
 
 func (ps *PeerStorage) ClearData() {

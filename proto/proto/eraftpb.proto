@@ -3,7 +3,8 @@ package eraftpb;
 
 enum EntryType {
     EntryNormal = 0;
-    EntryConfChange = 1;
+    EntryApply = 1;
+    EntryConfChange = 2;
 }
 
 // The entry is a type of change that needs to be applied. It contains two data fields.

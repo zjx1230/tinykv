@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-
 	"github.com/Connor1996/badger"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/scheduler_client"

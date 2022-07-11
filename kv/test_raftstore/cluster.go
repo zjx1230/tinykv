@@ -268,12 +268,14 @@ func (c *Cluster) GetRegion(key []byte) *metapb.Region {
 	for i := 0; i < 100; i++ {
 		region, _, _ := c.schedulerClient.GetRegion(context.TODO(), key)
 		if region != nil {
+			fmt.Printf("key: %s\n", string(key))
 			return region
 		}
 		// We may meet range gap after split, so here we will
 		// retry to get the region again.
 		SleepMS(20)
 	}
+	fmt.Printf("key: %s\n", string(key))
 	panic(fmt.Sprintf("find no region for %s", hex.EncodeToString(key)))
 }
 

@@ -194,7 +194,7 @@ func (bs *Raftstore) clearStaleMeta(kvWB, raftWB *engine_util.WriteBatch, origin
 
 type workers struct {
 	raftLogGCWorker  *worker.Worker
-	schedulerWorker  *worker.Worker
+	schedulerWorker  *worker.Worker // 接收处理一些周期性的工作
 	splitCheckWorker *worker.Worker
 	regionWorker     *worker.Worker
 	wg               *sync.WaitGroup
@@ -203,8 +203,8 @@ type workers struct {
 type Raftstore struct {
 	ctx        *GlobalContext
 	storeState *storeState
-	router     *router
-	workers    *workers
+	router     *router  // 维护regionId到peer的映射,负责转发消息
+	workers    *workers // 接收任务工作
 	tickDriver *tickDriver
 	closeCh    chan struct{}
 	wg         *sync.WaitGroup
@@ -267,7 +267,7 @@ func (bs *Raftstore) startWorkers(peers []*peer) {
 	router := bs.router
 	bs.wg.Add(2) // raftWorker, storeWorker
 	rw := newRaftWorker(ctx, router)
-	go rw.run(bs.closeCh, bs.wg)
+	go rw.run(bs.closeCh, bs.wg) // listen raft cmd for handling
 	sw := newStoreWorker(ctx, bs.storeState)
 	go sw.run(bs.closeCh, bs.wg)
 	router.sendStore(message.Msg{Type: message.MsgTypeStoreStart, Data: ctx.store})

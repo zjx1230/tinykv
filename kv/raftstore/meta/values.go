@@ -97,3 +97,14 @@ func WriteRegionState(kvWB *engine_util.WriteBatch, region *metapb.Region, state
 	regionState.Region = region
 	kvWB.SetMeta(RegionStateKey(region.Id), regionState)
 }
+
+func WriteApplyState(kvWB *engine_util.WriteBatch, regionID uint64, appliedIndex uint64, truncatedState *rspb.RaftTruncatedState) {
+	applyState := &rspb.RaftApplyState{
+		AppliedIndex: appliedIndex,
+		TruncatedState: &rspb.RaftTruncatedState{
+			Index: RaftInitLogIndex,
+			Term:  RaftInitLogTerm,
+		},
+	}
+	kvWB.SetMeta(ApplyStateKey(regionID), applyState)
+}

@@ -15,6 +15,7 @@
 package raft
 
 import (
+	"fmt"
 	"github.com/juju/errors"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"log"
@@ -114,7 +115,7 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	//fmt.Printf("applied index: %d, committed index: %d\n", l.applied, l.committed)
+	fmt.Printf("applied index: %d, committed index: %d\n", l.applied, l.committed)
 	if len(l.entries) == 0 {
 		return nil
 	}
@@ -135,7 +136,7 @@ func (l *RaftLog) GetCommittedEntries() []pb.Entry {
 	if len(l.entries) == 0 {
 		return nil
 	}
-
+	log.Printf("committed: %d\n", l.committed)
 	return l.entries[:l.GetRealIndex(l.committed)+1]
 }
 

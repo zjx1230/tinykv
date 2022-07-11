@@ -16,7 +16,9 @@ package raft
 
 import (
 	"errors"
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"sync"
 )
 
 // ErrStepLocalMsg is returned when try to step a local raft message
@@ -69,7 +71,10 @@ type Ready struct {
 type RawNode struct {
 	Raft *Raft
 	// Your Data Here (2A).
-	State *Ready
+	lock        sync.RWMutex
+	lastTerm    uint64
+	commitIndex uint64
+	//IsStateChange bool
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
@@ -77,16 +82,23 @@ func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
 	return &RawNode{
 		Raft: newRaft(config),
+		//IsStateChange: false,
 	}, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
 func (rn *RawNode) Tick() {
+	//rn.lock.Lock()
+	//defer rn.lock.Unlock()
+	//rn.IsStateChange = true
 	rn.Raft.tick()
 }
 
 // Campaign causes this RawNode to transition to candidate state.
 func (rn *RawNode) Campaign() error {
+	//rn.lock.Lock()
+	//rn.IsStateChange = true
+	//rn.lock.Unlock()
 	return rn.Raft.Step(pb.Message{
 		MsgType: pb.MessageType_MsgHup,
 	})
@@ -94,7 +106,13 @@ func (rn *RawNode) Campaign() error {
 
 // Propose proposes data be appended to the raft log.
 func (rn *RawNode) Propose(data []byte) error {
-	ent := pb.Entry{Data: data}
+	ent := pb.Entry{
+		EntryType: pb.EntryType_EntryApply,
+		Data:      data,
+	}
+	//rn.lock.Lock()
+	//rn.IsStateChange = true
+	//rn.lock.Unlock()
 	return rn.Raft.Step(pb.Message{
 		MsgType: pb.MessageType_MsgPropose,
 		From:    rn.Raft.id,
@@ -137,50 +155,79 @@ func (rn *RawNode) Step(m pb.Message) error {
 		return ErrStepLocalMsg
 	}
 	if pr := rn.Raft.Prs[m.From]; pr != nil || !IsResponseMsg(m.MsgType) {
+		//rn.lock.Lock()
+		//rn.IsStateChange = true
+		//rn.lock.Unlock()
 		return rn.Raft.Step(m)
 	}
+	log.Infof("id: %d, rn.Raft.Prs: %v, m.from: %d\n", rn.Raft.id, rn.Raft.Prs, m.From)
 	return ErrStepPeerNotFound
 }
 
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-	if rn.State == nil {
-		rn.State = &Ready{
-			//SoftState: &SoftState{
-			//	Lead:      rn.Raft.Lead,
-			//	RaftState: rn.Raft.State,
-			//},
-			HardState: pb.HardState{
-				Term:   rn.Raft.Term,
-				Vote:   rn.Raft.Vote,
-				Commit: rn.Raft.RaftLog.committed,
-			},
-			Entries:          rn.Raft.RaftLog.unstableEntries(),
-			CommittedEntries: rn.Raft.RaftLog.GetCommittedEntries(),
-			//Messages:         make([]pb.Message, 0),
-		}
-		if isHardStateEqual(rn.State.HardState, rn.Raft.GetHardState()) {
-			rn.State.HardState = pb.HardState{}
-		}
+	//rn.lock.RLock()
+	//defer rn.lock.RUnlock()
+	rd := Ready{
+		//SoftState: &SoftState{
+		//	Lead:      rn.Raft.Lead,
+		//	RaftState: rn.Raft.State,
+		//},
+		HardState:        pb.HardState{},
+		Entries:          rn.Raft.RaftLog.unstableEntries(),
+		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
+		//Messages:         make([]pb.Message, 0),
 	}
-	return *rn.State
+
+	hardState, _, err := rn.Raft.RaftLog.storage.InitialState()
+	if err != nil {
+		panic(err)
+	}
+	currentHardState := pb.HardState{
+		Term:   rn.Raft.Term,
+		Vote:   rn.Raft.Vote,
+		Commit: rn.Raft.RaftLog.committed,
+	}
+	if !isHardStateEqual(hardState, currentHardState) {
+		rd.HardState = currentHardState
+
+	}
+	if rn.Raft.msgs != nil && len(rn.Raft.msgs) != 0 {
+		rd.Messages = rn.Raft.msgs
+	}
+	return rd
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
-	return rn.State != nil
+	//rn.lock.RLock()
+	//defer rn.lock.RUnlock()
+	return (rn.Raft.msgs != nil && len(rn.Raft.msgs) != 0) || rn.Raft.RaftLog.applied < rn.Raft.RaftLog.committed
 }
 
 // Advance notifies the RawNode that the application has applied and saved progress in the
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
-	if len(rd.Entries) != 0 {
-		rn.Raft.RaftLog.entries = rn.Raft.RaftLog.entries[rn.Raft.RaftLog.GetRealIndex(rd.Entries[len(rd.Entries)-1].Index)+1:]
+	//if len(rd.Entries) != 0 {
+	//	rn.Raft.RaftLog.entries = rn.Raft.RaftLog.entries[rn.Raft.RaftLog.GetRealIndex(rd.Entries[len(rd.Entries)-1].Index)+1:]
+	//}
+	//rn.lock.Lock()
+	if len(rd.CommittedEntries) > 0 {
+		//fmt.Printf("Advance rd.CommittedEntries: %v, "+
+		//	"applied: %d, rd.CommittedEntries[len(rd.CommittedEntries)-1].Index: %d\n", rd.CommittedEntries, rn.Raft.RaftLog.applied, rd.CommittedEntries[len(rd.CommittedEntries)-1].Index)
+		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
 	}
-	rn.State = nil
+	if len(rd.Entries) > 0 {
+		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
+	}
+	rn.Raft.msgs = make([]pb.Message, 0)
+	//rn.lastTerm = rd.Term
+	//rn.commitIndex = rd.Commit
+	//rn.IsStateChange = false
+	//rn.lock.Unlock()
 }
 
 // GetProgress return the Progress of this node and its peers, if this
