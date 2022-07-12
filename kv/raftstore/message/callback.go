@@ -1,7 +1,6 @@
 package message
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/Connor1996/badger"
@@ -34,10 +33,10 @@ func (cb *Callback) WaitResp() *raft_cmdpb.RaftCmdResponse {
 func (cb *Callback) WaitRespWithTimeout(timeout time.Duration) *raft_cmdpb.RaftCmdResponse {
 	select {
 	case <-cb.done:
-		fmt.Println("cb.done\n")
+		//fmt.Println("cb.done\n")
 		return cb.Resp
 	case <-time.After(timeout):
-		fmt.Println("cb.timeout\n")
+		//fmt.Printf("cb.timeout, len(resp.Responses): %d\n", len(cb.Resp.Responses))
 		return cb.Resp
 	}
 }

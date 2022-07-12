@@ -405,7 +405,7 @@ func (r *Raft) Step(m pb.Message) error {
 	//}
 
 	if r.Term < m.Term {
-		fmt.Printf("msg: %v, id: %d\n", m, r.id)
+		//fmt.Printf("msg: %v, id: %d\n", m, r.id)
 		r.State = StateFollower
 	}
 
@@ -571,8 +571,8 @@ func (r *Raft) handleMsgRequestVoteResponse(m pb.Message) {
 			if !ok {
 				rejectNum++
 				if rejectNum > len(r.peers)/2 {
-					fmt.Printf("handleMsgRequestVoteResponse id: %d\n", r.id)
-					r.becomeFollower(r.Term, 0)
+					fmt.Printf("handleMsgRequestVoteResponse id: %d, becomeFollower\n", r.id)
+					r.becomeFollower(r.Term, None)
 					break
 				}
 			}
@@ -622,8 +622,8 @@ func (r *Raft) handleMsgHup() {
 // handleAppendEntries handle AppendEntries RPC request todo
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
-	fmt.Printf("handleAppendEntries, id : %d, msg: %v, state: %d, r.log: %v\n", r.id, m, r.State, r.RaftLog)
-	defer fmt.Printf("after handleAppendEntries, id : %d, msg: %v, state: %d, r.log: %v\n", r.id, m, r.State, r.RaftLog)
+	// fmt.Printf("handleAppendEntries, id : %d, msg: %v, state: %d, r.log: %v\n", r.id, m, r.State, r.RaftLog)
+	// defer fmt.Printf("after handleAppendEntries, id : %d, msg: %v, state: %d, r.log: %v\n", r.id, m, r.State, r.RaftLog)
 	new_msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
 		From:    r.id,

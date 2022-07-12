@@ -71,6 +71,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			} else if preEntry.Index != entry.Index || preEntry.Term != entry.Term {
 				cb := d.getCorrespondingCallBack(preEntry)
 				cb.Done(resp)
+				resp = newCmdResp()
 				preEntry = &pb.Entry{
 					Index: entry.Index,
 					Term:  entry.Term,
@@ -241,7 +242,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		if err != nil {
 			log.Errorf("req: %v, req.Marshal() err: %v\n", req, err)
 		}
-		fmt.Printf("proposeRaftCommand, req: %v\n", req)
+		//fmt.Printf("proposeRaftCommand, req: %v\n", req)
 		err = d.RaftGroup.Propose(data)
 		if err != nil {
 			log.Errorf("d.RaftGroup.Propose err: %v\n", err)
