@@ -362,12 +362,12 @@ func (r *Raft) becomeLeader() {
 
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
 	r.Prs[r.id].Next = r.RaftLog.LastIndex() + 1
-	fmt.Printf("become Leader, id : %d, log: %v\n", r.id, r.RaftLog)
+	//fmt.Printf("become Leader, id : %d\n", r.id)
 	for _, id := range r.peers {
 		if id == r.id {
 			continue
 		}
-		fmt.Printf("id : %d, r.Prs[id].Next: %d\n", id, r.Prs[id].Next)
+		//fmt.Printf("id : %d, r.Prs[id].Next: %d\n", id, r.Prs[id].Next)
 		r.sendAppendEntries(id, r.Prs[id].Next)
 	}
 }
@@ -406,7 +406,7 @@ func (r *Raft) Step(m pb.Message) error {
 
 	if r.Term < m.Term {
 		//fmt.Printf("msg: %v, id: %d\n", m, r.id)
-		r.State = StateFollower
+		r.becomeFollower(m.Term, None)
 	}
 
 	if r.State != StateLeader && m.MsgType == pb.MessageType_MsgHup {
