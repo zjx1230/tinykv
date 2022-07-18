@@ -44,6 +44,7 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 
 func (d *peerMsgHandler) apply(rd raft.Ready) {
 	kvWB := new(engine_util.WriteBatch)
+	raftWb := new(engine_util.WriteBatch)
 	//fmt.Printf("rd.CommittedEntries: %v\n", rd.CommittedEntries)
 	for _, entry := range rd.CommittedEntries {
 		if entry.EntryType == pb.EntryType_EntryApply {
@@ -56,11 +57,18 @@ func (d *peerMsgHandler) apply(rd raft.Ready) {
 			d.ctx.storeMeta.Unlock()
 			d.processApplyEntry(&entry, kvWB, resp)
 			cb.Done(resp)
+		} else { // raft log
+			key := meta.RaftLogKey(d.regionId, entry.Index)
+			raftWb.SetMeta(key, &entry)
 		}
 	}
 	err := d.peerStorage.Engines.WriteKV(kvWB)
 	if err != nil {
 		log.Errorf("peerStorage.Engines.WriteKV error: %v\n", err)
+	}
+	err = d.peerStorage.Engines.WriteRaft(raftWb)
+	if err != nil {
+		log.Errorf("peerStorage.Engines.WriteRaft error: %v\n", err)
 	}
 }
 
@@ -95,13 +103,112 @@ func (d *peerMsgHandler) getCorrespondingCallBack(entry *pb.Entry) (*message.Cal
 	return nil, -1
 }
 
-func (d *peerMsgHandler) processApplyEntry(entry *pb.Entry, kvWB *engine_util.WriteBatch, resps *raft_cmdpb.RaftCmdResponse) {
-	//cb := d.getCorrespondingCallBack(entry)
-	//if cb == nil {
-	//	log.Warnf("CallBack Not Found\n")
-	//	return
-	//}
+func (d *peerMsgHandler) handleNonAdminRequest(requests *raft_cmdpb.RaftCmdRequest, resps *raft_cmdpb.RaftCmdResponse) {
+	for _, request := range requests.Requests {
+		resp := &raft_cmdpb.Response{
+			CmdType: request.CmdType,
+		}
+		switch request.CmdType {
+		case raft_cmdpb.CmdType_Get:
+			val, err := engine_util.GetCF(d.peerStorage.Engines.Kv, request.Get.Cf, request.Get.Key)
+			if err != nil {
+				log.Errorf("engine_util.GetCF error: %v\n", err)
+			}
+			resp.Get = &raft_cmdpb.GetResponse{
+				Value: val,
+			}
+			resps.Responses = append(resps.Responses, resp)
+		case raft_cmdpb.CmdType_Put:
+			err := engine_util.PutCF(d.peerStorage.Engines.Kv, request.Put.Cf, request.Put.Key, request.Put.Value)
+			if err != nil {
+				log.Errorf("engine_util.PutCF error: %v\n", err)
+			}
+			resp.Put = &raft_cmdpb.PutResponse{}
+			resps.Responses = append(resps.Responses, resp)
+		case raft_cmdpb.CmdType_Delete:
+			err := engine_util.DeleteCF(d.peerStorage.Engines.Kv, request.Delete.Cf, request.Delete.Key)
+			if err != nil {
+				log.Errorf("engine_util.DeleteCF error: %v\n", err)
+			}
+			resp.Delete = &raft_cmdpb.DeleteResponse{}
+			resps.Responses = append(resps.Responses, resp)
+		case raft_cmdpb.CmdType_Snap:
+			resp.Snap = &raft_cmdpb.SnapResponse{
+				Region: d.Region(),
+			}
+			resps.Responses = append(resps.Responses, resp)
+		default:
+			log.Panicf("unknown cmd type: %v\n", request.CmdType)
+		}
+	}
+}
 
+func (d *peerMsgHandler) handleAdminRequest(requests *raft_cmdpb.RaftCmdRequest, resps *raft_cmdpb.RaftCmdResponse, kvWB *engine_util.WriteBatch, index uint64) {
+	adminRequest := requests.AdminRequest
+	resp := &raft_cmdpb.AdminResponse{
+		CmdType: requests.AdminRequest.CmdType,
+	}
+	switch adminRequest.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		meta.WriteRegionState(kvWB, d.Region(), rspb.PeerState_Normal)
+		meta.WriteApplyState(kvWB, d.regionId, index, &rspb.RaftTruncatedState{
+			Index: adminRequest.CompactLog.CompactIndex,
+			Term:  adminRequest.CompactLog.CompactTerm,
+		})
+		d.ScheduleCompactLog(adminRequest.CompactLog.CompactIndex)
+		// send snapshot
+		for {
+			snapshot, err := d.peer.peerStorage.Snapshot()
+			if err != nil {
+				log.Warnf("Snapshot error: %v\n", err)
+				time.Sleep(1000)
+				continue
+			}
+
+			// Send Snapshot
+			for _, peer := range d.RaftGroup.Raft.GetPeers() {
+				if peer == d.PeerId() {
+					continue
+				}
+				toPeer := d.getPeerFromCache(peer)
+				if toPeer == nil {
+					log.Errorf("[handleAdminRequest] failed to lookup recipient peer %v in region %v", peer, d.regionId)
+				}
+
+				go func() {
+					d.ctx.trans.Send(&rspb.RaftMessage{
+						RegionId: d.regionId,
+						FromPeer: d.peer.Meta,
+						ToPeer:   toPeer,
+						Message: &pb.Message{
+							MsgType:  pb.MessageType_MsgSnapshot,
+							To:       peer,
+							From:     d.PeerId(),
+							Term:     d.Term(),
+							Snapshot: &snapshot,
+						},
+						RegionEpoch: d.Region().RegionEpoch,
+						IsTombstone: false,
+					})
+				}()
+			}
+			break
+		}
+	case raft_cmdpb.AdminCmdType_ChangePeer:
+
+	case raft_cmdpb.AdminCmdType_TransferLeader:
+
+	case raft_cmdpb.AdminCmdType_Split:
+
+	case raft_cmdpb.AdminCmdType_InvalidAdmin:
+
+	default:
+		log.Panicf("unknown cmd type: %v\n", adminRequest.CmdType)
+	}
+	resps.AdminResponse = resp
+}
+
+func (d *peerMsgHandler) processApplyEntry(entry *pb.Entry, kvWB *engine_util.WriteBatch, resps *raft_cmdpb.RaftCmdResponse) {
 	requests := new(raft_cmdpb.RaftCmdRequest)
 	err := requests.Unmarshal(entry.Data)
 	if err != nil {
@@ -109,51 +216,15 @@ func (d *peerMsgHandler) processApplyEntry(entry *pb.Entry, kvWB *engine_util.Wr
 	}
 
 	if requests.Requests != nil && len(requests.Requests) != 0 {
-		for _, request := range requests.Requests {
-			resp := &raft_cmdpb.Response{
-				CmdType: request.CmdType,
-			}
-			switch request.CmdType {
-			case raft_cmdpb.CmdType_Get:
-				val, err := engine_util.GetCF(d.peerStorage.Engines.Kv, request.Get.Cf, request.Get.Key)
-				if err != nil {
-					log.Errorf("engine_util.GetCF error: %v\n", err)
-				}
-				resp.Get = &raft_cmdpb.GetResponse{
-					Value: val,
-				}
-				resps.Responses = append(resps.Responses, resp)
-			case raft_cmdpb.CmdType_Put:
-				err = engine_util.PutCF(d.peerStorage.Engines.Kv, request.Put.Cf, request.Put.Key, request.Put.Value)
-				if err != nil {
-					log.Errorf("engine_util.PutCF error: %v\n", err)
-				}
-				resp.Put = &raft_cmdpb.PutResponse{}
-				resps.Responses = append(resps.Responses, resp)
-			case raft_cmdpb.CmdType_Delete:
-				err = engine_util.DeleteCF(d.peerStorage.Engines.Kv, request.Delete.Cf, request.Delete.Key)
-				if err != nil {
-					log.Errorf("engine_util.DeleteCF error: %v\n", err)
-				}
-				resp.Delete = &raft_cmdpb.DeleteResponse{}
-				resps.Responses = append(resps.Responses, resp)
-			case raft_cmdpb.CmdType_Snap:
-				resp.Snap = &raft_cmdpb.SnapResponse{
-					Region: d.Region(),
-				}
-				resps.Responses = append(resps.Responses, resp)
-			default:
-				log.Panicf("unknown cmd type: %v\n", request.CmdType)
-			}
-		}
+		d.handleNonAdminRequest(requests, resps)
+		meta.WriteRegionState(kvWB, d.Region(), rspb.PeerState_Normal)
+		meta.WriteApplyState(kvWB, d.regionId, entry.Index, &rspb.RaftTruncatedState{
+			Index: d.peerStorage.applyState.TruncatedState.Index,
+			Term:  d.peerStorage.applyState.TruncatedState.Term,
+		})
+	} else { // Admin Request
+		d.handleAdminRequest(requests, resps, kvWB, entry.Index)
 	}
-
-	regionID := d.regionId
-	meta.WriteRegionState(kvWB, d.Region(), rspb.PeerState_Normal)
-	meta.WriteApplyState(kvWB, regionID, entry.Index, &rspb.RaftTruncatedState{
-		Index: meta.RaftInitLogIndex,
-		Term:  meta.RaftInitLogTerm,
-	})
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {

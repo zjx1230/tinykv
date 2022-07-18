@@ -320,12 +320,11 @@ func (ps *PeerStorage) appendEntry(e eraftpb.Entry) error {
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
-	err := ps.Engines.WriteRaft(raftWB)
-	if err != nil {
-		return err
-	}
-
 	if len(entries) == 0 {
+		err := ps.Engines.WriteRaft(raftWB)
+		if err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -335,62 +334,19 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 			return err
 		}
 	}
-	//needTruncate := false
-	//if entries[0].Index > ps.raftState.LastIndex && entries[0].Term >= ps.raftState.LastTerm { // direct append
-	//	for _, e := range entries {
-	//		err := ps.appendEntry(e)
-	//		if err != nil {
-	//			return err
-	//		}
-	//	}
-	//} else {
-	//	for _, e := range entries {
-	//		key := meta.RaftLogKey(ps.region.Id, e.Index)
-	//		err := ps.Engines.Raft.View(func(txn *badger.Txn) error {
-	//			item, err := txn.Get(key)
-	//			if err != nil {
-	//				fmt.Printf("err : %v\n", err)
-	//				return err
-	//			}
-	//			value, err := item.Value()
-	//			if err != nil {
-	//				return err
-	//			}
-	//			var entry eraftpb.Entry
-	//			proto.Unmarshal(value, &entry)
-	//			if entry.Term < e.Term {
-	//				return errors.New("truncate")
-	//			}
-	//			return nil
-	//		})
-	//
-	//		if err != nil {
-	//			if !needTruncate && strings.HasPrefix(err.Error(), "truncate") {
-	//				needTruncate = true
-	//			}
-	//			err = ps.appendEntry(e)
-	//			if err != nil {
-	//				return err
-	//			}
-	//		}
-	//	}
-	//
-	//	if needTruncate && entries[len(entries)-1].Index < ps.raftState.LastIndex {
-	//		fmt.Printf("oooooooo\n")
-	//		ps.raftState.LastIndex = entries[len(entries)-1].Index
-	//		ps.raftState.LastTerm = entries[len(entries)-1].Term
-	//		for i := entries[len(entries)-1].Index + 1; i <= ps.raftState.LastIndex; i++ {
-	//			key := meta.RaftLogKey(ps.region.Id, i)
-	//			ps.Engines.Raft.Update(func(txn *badger.Txn) error {
-	//				return txn.Delete(key)
-	//			})
-	//		}
-	//	}
-	//}
 
 	if entries[len(entries)-1].Index > ps.raftState.LastIndex {
 		ps.raftState.LastIndex = entries[len(entries)-1].Index
 		ps.raftState.LastTerm = entries[len(entries)-1].Term
+	}
+	err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+	if err != nil {
+		return err
+	}
+
+	err = ps.Engines.WriteRaft(raftWB)
+	if err != nil {
+		return err
 	}
 	return nil
 }
@@ -407,7 +363,33 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and send RegionTaskApply task to region worker through ps.regionSched, also remember call ps.clearMeta
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
-	return nil, nil
+	ps.applyState.TruncatedState.Index = snapshot.Metadata.Index
+	ps.applyState.TruncatedState.Term = snapshot.Metadata.Term
+	meta.WriteApplyState(kvWB, snapData.Region.Id, ps.applyState.AppliedIndex, ps.applyState.TruncatedState)
+	ps.snapState.StateType = snap.SnapState_Applying
+
+	notifier := make(chan bool, 0)
+	ps.regionSched <- &runner.RegionTaskApply{
+		RegionId: snapData.Region.Id,
+		Notifier: notifier,
+		SnapMeta: snapshot.Metadata,
+		StartKey: snapData.Region.StartKey,
+		EndKey:   snapData.Region.EndKey,
+	}
+
+	if ok := <-notifier; !ok {
+		log.Errorf("RegionTaskApply snapshot fail\n")
+	}
+	err := ps.clearMeta(kvWB, raftWB)
+	if err != nil {
+		return nil, err
+	}
+	newRegion := new(metapb.Region)
+	ps.clearExtraData(newRegion) // TODO
+	res := new(ApplySnapResult)
+	res.PrevRegion = ps.region
+	res.Region = newRegion
+	return res, nil
 }
 
 // Save memory states to disk.
@@ -419,17 +401,11 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	if len(ready.Entries) == 0 {
 		return nil, nil
 	}
-	writeBatch := new(engine_util.WriteBatch)
-	var res *ApplySnapResult
-	err := writeBatch.SetMeta(meta.RaftStateKey(ps.region.Id), &rspb.RaftLocalState{
-		HardState: &ready.HardState,
-		LastIndex: ready.Entries[len(ready.Entries)-1].Index,
-	})
-	if err != nil {
-		return res, err
-	}
-
-	err = ps.Append(ready.Entries, writeBatch)
+	ps.raftState.HardState = &ready.HardState
+	raftWB := new(engine_util.WriteBatch)
+	err := ps.Append(ready.Entries, raftWB)
+	kvWB := new(engine_util.WriteBatch)
+	res, err := ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
 	if err != nil {
 		return res, err
 	}
