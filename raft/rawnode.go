@@ -170,7 +170,7 @@ func (rn *RawNode) Ready() Ready {
 	}
 
 	hardState := rn.Raft.getHardState()
-	if !isHardStateEqual(*hardState, *rn.prevHardState) {
+	if !IsEmptyHardState(*hardState) && !isHardStateEqual(*rn.prevHardState, *hardState) {
 		rd.HardState = *hardState
 	}
 
@@ -216,10 +216,16 @@ func (rn *RawNode) Advance(rd Ready) {
 
 	if len(rd.CommittedEntries) > 0 {
 		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+		if rn.Raft.RaftLog.applied > rn.Raft.RaftLog.committed {
+			log.Panicf("rn.Raft.RaftLog.applied: %d > rn.Raft.RaftLog.committed: %d\n", rn.Raft.RaftLog.applied, rn.Raft.RaftLog.committed)
+		}
 	}
 
 	if len(rd.Entries) > 0 {
 		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
+		if rn.Raft.RaftLog.stabled > rn.Raft.RaftLog.LastIndex() {
+			log.Panicf("rn.Raft.RaftLog.stabled: %d > rn.Raft.RaftLog.LastIndex(): %d\n", rn.Raft.RaftLog.stabled, rn.Raft.RaftLog.LastIndex())
+		}
 	}
 
 	// todo snapshot

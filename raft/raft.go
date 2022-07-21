@@ -20,7 +20,6 @@ import (
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"math/rand"
-	"time"
 )
 
 // None is a placeholder node ID used when there is no leader.
@@ -279,7 +278,11 @@ func (r *Raft) sendAppend(to uint64) bool {
 		return false
 	}
 
-	newEntries := r.RaftLog.getEntries(r.Prs[to].Next, r.RaftLog.LastIndex()+1)
+	var newEntries []pb.Entry
+	if r.Prs[to].Next < r.RaftLog.LastIndex()+1 {
+		newEntries = r.RaftLog.getEntries(r.Prs[to].Next, r.RaftLog.LastIndex()+1)
+	}
+
 	logTerm, err := r.RaftLog.Term(r.Prs[to].Next - 1)
 	if err != nil {
 		panic(err)
@@ -466,6 +469,8 @@ func (r *Raft) stepLeader(m pb.Message) {
 		r.sendHeartBeat()
 	case pb.MessageType_MsgPropose:
 		r.handleMsgPropose(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
 	case pb.MessageType_MsgHeartbeatResponse:
 		r.handleMsgHeartbeatResponse(m)
 	case pb.MessageType_MsgAppendResponse:
@@ -479,7 +484,11 @@ func (r *Raft) stepLeader(m pb.Message) {
 
 func (r *Raft) handleMsgHeartbeatResponse(m pb.Message) {
 	if m.Reject {
-		r.becomeFollower(max(m.Term, r.Term), None)
+		if m.Term > r.Term {
+			r.becomeFollower(m.Term, None)
+		} else {
+			r.sendAppend(m.From) // send missing log
+		}
 	}
 }
 
@@ -521,7 +530,6 @@ func (r *Raft) handleMsgAppendResponse(m pb.Message) {
 				r.Prs[m.From].Match = max(r.Prs[m.From].Match, m.Index)
 				r.Prs[m.From].Next = max(r.Prs[m.From].Next, m.Index+1)
 			}
-
 			cnt := 1
 			newCommitted := uint64(0)
 			for peer, p := range r.Prs {
@@ -537,8 +545,10 @@ func (r *Raft) handleMsgAppendResponse(m pb.Message) {
 					}
 				}
 			}
+			//fmt.Printf("r.id: %d, cnt: %d, commit: %d\n", r.id, cnt, newCommitted)
 			if cnt > len(r.peers)/2 {
 				r.RaftLog.committed = newCommitted
+				//fmt.Printf("id: %d, commit: %d\n", r.id, r.RaftLog.committed)
 				for _, peer := range r.peers {
 					if peer == r.id {
 						continue
@@ -558,7 +568,7 @@ func (r *Raft) handleMsgAppendResponse(m pb.Message) {
 				}
 			}
 		}
-	} else if m.Snapshot == nil {
+	} else if !m.NeedSnapshot {
 		if m.Term > r.Term {
 			r.becomeFollower(m.Term, None)
 			return
@@ -573,24 +583,19 @@ func (r *Raft) handleMsgAppendResponse(m pb.Message) {
 		r.Prs[m.From].Next = preIndex + 1
 		r.sendAppend(m.From)
 	} else {
-		// generate snapshot
-		for {
-			snapshot, err := r.RaftLog.storage.Snapshot()
-			if err != nil {
-				log.Warnf("Snapshot err: %v\n", err)
-				time.Sleep(1000)
-				continue
-			}
-			r.msgs = append(r.msgs, pb.Message{
-				From:     r.id,
-				To:       m.From,
-				Term:     r.Term,
-				MsgType:  pb.MessageType_MsgSnapshot,
-				Commit:   r.RaftLog.committed,
-				Snapshot: &snapshot,
-			})
-			break
-		}
+		// generate snapshot todo
+		//snapshot, err := r.RaftLog.storage.Snapshot()
+		//if err != nil {
+		//	return
+		//}
+		//r.msgs = append(r.msgs, pb.Message{
+		//	From:     r.id,
+		//	To:       m.From,
+		//	Term:     r.Term,
+		//	MsgType:  pb.MessageType_MsgSnapshot,
+		//	Commit:   r.RaftLog.committed,
+		//	Snapshot: &snapshot,
+		//})
 	}
 }
 
@@ -607,7 +612,6 @@ func (r *Raft) handleMsgRequestVoteResponse(m pb.Message) {
 			if !ok {
 				rejectNum++
 				if rejectNum > len(r.peers)/2 {
-					fmt.Printf("handleMsgRequestVoteResponse id: %d, becomeFollower\n", r.id)
 					r.becomeFollower(r.Term, None)
 					break
 				}
@@ -639,12 +643,12 @@ func (r *Raft) handleMsgRequestVote(m pb.Message) {
 			r.Vote = m.From
 		}
 	} else {
+		if m.Term > r.Term {
+			r.becomeFollower(m.Term, None)
+		}
 		newMsg.Reject = true
 	}
 
-	if m.Term > r.Term {
-		r.becomeFollower(m.Term, None)
-	}
 	r.msgs = append(r.msgs, newMsg)
 }
 
@@ -680,11 +684,12 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	// fmt.Printf("handleAppendEntries, id : %d, msg: %v, state: %d, r.log: %v\n", r.id, m, r.State, r.RaftLog)
 	// defer fmt.Printf("after handleAppendEntries, id : %d, msg: %v, state: %d, r.log: %v\n", r.id, m, r.State, r.RaftLog)
 	new_msg := pb.Message{
-		MsgType: pb.MessageType_MsgAppendResponse,
-		From:    r.id,
-		To:      m.From,
-		Term:    max(r.Term, m.Term),
-		Reject:  false,
+		MsgType:      pb.MessageType_MsgAppendResponse,
+		From:         r.id,
+		To:           m.From,
+		Term:         max(r.Term, m.Term),
+		Reject:       false,
+		NeedSnapshot: false,
 	}
 
 	if m.Term < r.Term {
@@ -698,7 +703,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	lastIndex := r.RaftLog.LastIndex()
 
 	if m.Index < dummyIndex { // need snapshot
-		new_msg.Snapshot = &pb.Snapshot{}
+		new_msg.NeedSnapshot = true
 		new_msg.Reject = true
 	} else if m.Index > lastIndex {
 		new_msg.Reject = true
@@ -712,11 +717,15 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 		if term == m.LogTerm {
 			//fmt.Printf("m.Index: %d\n", m.Index)
+			preLastIndex := r.RaftLog.LastIndex()
 			new_msg.Index = r.appendEntries(convertEntryArray(m.Entries)...)
+			if r.RaftLog.LastIndex() < r.RaftLog.stabled {
+				log.Panicf("preLastIndex: %d, r.RaftLog.LastIndex(): %d < r.RaftLog.stabled: %d\n", preLastIndex, r.RaftLog.LastIndex(), r.RaftLog.stabled)
+			}
 			if m.Reject || (m.Entries != nil && len(m.Entries) > 0) { // update commitIndex
-				r.RaftLog.committed = min(m.Commit, r.RaftLog.LastIndex())
+				r.RaftLog.committed = min(max(m.Commit, r.RaftLog.committed), r.RaftLog.LastIndex())
 			} else if m.Entries == nil || len(m.Entries) == 0 { // update commitIndex for match index
-				r.RaftLog.committed = max(r.RaftLog.committed, min(m.Commit, m.Index))
+				r.RaftLog.committed = min(r.RaftLog.LastIndex(), max(r.RaftLog.committed, min(m.Commit, m.Index)))
 			}
 		} else {
 			// reject find conflict index
@@ -739,7 +748,8 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	if m.Term >= r.Term || m.Index >= r.RaftLog.LastIndex() {
 		r.becomeFollower(m.Term, m.From)
 	}
-	r.RaftLog.committed = max(r.RaftLog.committed, m.Commit)
+	//fmt.Printf("id: %d, r.RaftLog.committed: %d, r.RaftLog.LastIndex(): %d, m.Commit: %d\n", r.id, r.RaftLog.committed, r.RaftLog.LastIndex(), m.Commit)
+
 	newMessage := pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeatResponse,
 		From:    r.id,
@@ -750,47 +760,39 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		Reject:  false,
 	}
 
-	if r.Term > m.Term {
+	if r.Term > m.Term || m.Commit > r.RaftLog.LastIndex() || r.RaftLog.committed < m.Commit {
 		newMessage.Reject = true
+	} else {
+		r.RaftLog.committed = min(r.RaftLog.LastIndex(), max(r.RaftLog.committed, m.Commit))
 	}
-
 	r.msgs = append(r.msgs, newMessage)
 }
 
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	fmt.Printf("handleSnapshot\n")
 	if m.Snapshot == nil {
 		panic("snapshot is nil.")
 	}
 
-	//if m.Term < r.Term || r.RaftLog.FirstIndex() > m.Snapshot.Metadata.Index {
-	//	return
-	//}
-	//r.Lead = m.From
-	//r.Term = max(r.Term, m.Snapshot.Metadata.Term)
-	//newEntries := make([]pb.Entry, 0)
-	//newEntries = append(newEntries, pb.Entry{
-	//	EntryType: pb.EntryType_EntryApply,
-	//	Term:      m.Snapshot.Metadata.Term,
-	//	Index:     m.Snapshot.Metadata.Index,
-	//	Data:      m.Snapshot.Data,
-	//})
-	//if r.RaftLog.FirstIndex() <= m.Snapshot.Metadata.Index && m.Snapshot.Metadata.Index < r.RaftLog.LastIndex() {
-	//	nxtIndex := r.RaftLog.GetRealIndex(m.Snapshot.Metadata.Index) + 1
-	//	newEntries = append(newEntries, r.RaftLog.entries[nxtIndex:]...)
-	//}
-	//r.RaftLog.entries = newEntries
-	//r.RaftLog.pendingSnapshot = m.Snapshot
-	//r.RaftLog.committed = max(r.RaftLog.committed, m.Snapshot.Metadata.Index)
-	//r.peers = m.Snapshot.Metadata.ConfState.Nodes
-	//for _, peer := range r.peers {
-	//	if r.Prs[peer] == nil {
-	//		r.Prs[peer] = new(Progress)
-	//	}
-	//	r.Prs[peer].Match = r.RaftLog.LastIndex()
-	//	r.Prs[peer].Next = r.RaftLog.LastIndex() + 1
-	//}
+	if m.Term < r.Term || r.RaftLog.FirstIndex() > m.Snapshot.Metadata.Index {
+		return
+	}
+
+	r.Lead = m.From
+	r.Term = max(r.Term, m.Snapshot.Metadata.Term)
+	if r.RaftLog.FirstIndex() <= m.Snapshot.Metadata.Index && m.Snapshot.Metadata.Index <= r.RaftLog.LastIndex() {
+		if len(r.RaftLog.entries) > 0 {
+			r.RaftLog.entries = r.RaftLog.entries[m.Snapshot.Metadata.Index-r.RaftLog.entries[0].Index+1:]
+		}
+	}
+	r.RaftLog.pendingSnapshot = m.Snapshot
+	r.RaftLog.committed = max(r.RaftLog.committed, m.Snapshot.Metadata.Index)
+
+	if m.Snapshot.Metadata.ConfState.Nodes != nil && len(m.Snapshot.Metadata.ConfState.Nodes) > 0 {
+		r.peers = m.Snapshot.Metadata.ConfState.Nodes
+	}
 }
 
 // addNode add a new node to raft group
