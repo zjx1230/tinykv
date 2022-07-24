@@ -55,6 +55,7 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
+	dummyIndex uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
@@ -79,20 +80,17 @@ func newLog(storage Storage) *RaftLog {
 
 	entries, err := storage.Entries(firstIndex, endIndex+1)
 	if err != nil {
-		panic(err)
+		log.Panicf("firstIndex: %d, endIndex: %d, err: %v\n", firstIndex, endIndex, err)
 	}
 
 	for _, entry := range entries {
 		raftLog.entries = append(raftLog.entries, entry)
 	}
 
-	//if len(raftLog.entries) == 0 {
-	//	raftLog.entries = append(raftLog.entries, pb.Entry{}) // dummy entry
-	//}
-
 	raftLog.stabled = endIndex
 	raftLog.committed = firstIndex - 1
 	raftLog.applied = firstIndex - 1
+	raftLog.dummyIndex = firstIndex - 1
 	return raftLog
 }
 
@@ -175,6 +173,10 @@ func (l *RaftLog) appendEntries(ents ...pb.Entry) uint64 {
 			l.entries = append(l.entries, leftEntries...)
 		}
 
+		if l.committed > l.LastIndex() {
+			panic("l.committed > l.LastIndex()")
+		}
+
 		if l.stabled > l.LastIndex() {
 			fmt.Printf("len(l.entries): %d, term1: %d, term2: %d, index1: %d, isTheSame: %v, l.stabled: %d, l.LastIndex(): %d\n", len(l.entries), term1, term2, index1, isTheSame, l.stabled, l.LastIndex())
 		}
@@ -215,6 +217,25 @@ func (l *RaftLog) appendEntries(ents ...pb.Entry) uint64 {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	if len(l.entries) == 0 {
+		return
+	}
+
+	lastIndex := l.LastIndex()
+	if (l.pendingSnapshot != nil && l.pendingSnapshot.Metadata.Index >= lastIndex) || l.dummyIndex >= lastIndex {
+		l.entries = make([]pb.Entry, 0)
+		return
+	}
+
+	if l.pendingSnapshot != nil && l.pendingSnapshot.Metadata.Index > l.entries[0].Index {
+		l.entries = l.entries[l.pendingSnapshot.Metadata.Index-l.entries[0].Index+1:]
+		return
+	}
+
+	if l.dummyIndex > l.entries[0].Index {
+		l.entries = l.entries[l.dummyIndex-l.entries[0].Index+1:]
+		return
+	}
 }
 
 // unstableEntries return all the unstable entries
@@ -262,15 +283,18 @@ func (l *RaftLog) FirstIndex() uint64 {
 		return l.pendingSnapshot.Metadata.Index + 1
 	}
 
-	firstIndex, err := l.storage.FirstIndex()
-	if err == nil {
-		return firstIndex
-	}
+	return l.dummyIndex + 1
 
-	if len(l.entries) == 0 {
-		panic("len(l.entries) == 0\n")
-	}
-	return l.entries[0].Index + 1
+	//firstIndex, err := l.storage.FirstIndex()
+	//if err == nil {
+	//	return firstIndex
+	//}
+
+	//if len(l.entries) == 0 {
+	//	return l.dummyIndex + 1
+	//}
+	//fmt.Printf("index: %d\n", l.entries[0].Index+1)
+	//return l.entries[0].Index + 1
 }
 
 // LastIndex return the last index of the log entries
@@ -280,11 +304,13 @@ func (l *RaftLog) LastIndex() uint64 {
 		if l.pendingSnapshot != nil {
 			return l.pendingSnapshot.Metadata.Index
 		} else {
-			lastIndex, err := l.storage.LastIndex()
-			if err != nil {
-				panic(err)
-			}
-			return lastIndex
+			//panic("no entries")
+			//lastIndex, err := l.storage.LastIndex()
+			//if err != nil {
+			//	panic(err)
+			//}
+			//return lastIndex
+			return l.dummyIndex
 		}
 	}
 	return l.entries[len(l.entries)-1].Index
@@ -296,7 +322,7 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	dummyIndex := l.FirstIndex() - 1
 	lastIndex := l.LastIndex()
 	if i < dummyIndex || i > lastIndex {
-		return 0, errors.New("i index out of the entries")
+		return 0, errors.New(fmt.Sprintf("i: %d index out of the entries, dummyIndex: %d, lastIndex: %d\n", i, dummyIndex, lastIndex))
 	}
 
 	if l.pendingSnapshot != nil {
@@ -310,7 +336,11 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	}
 
 	if len(l.entries) == 0 {
-		panic("len(l.entries) == 0\n")
+		//term, err := l.storage.Term(i)
+		//if err == nil {
+		//	return term, err
+		//}
+		return 0, errors.New(fmt.Sprintf("len(l.entries) == 0, i: %d, dummyIndex: %d, lastIndex: %d\n", i, dummyIndex, lastIndex))
 	}
 
 	offset := l.entries[0].Index

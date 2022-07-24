@@ -216,6 +216,7 @@ func (rn *RawNode) Advance(rd Ready) {
 
 	if len(rd.CommittedEntries) > 0 {
 		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+		//fmt.Printf("Advance id: %d, applied: %d, firstIndex: %d\n", rn.Raft.id, rn.Raft.RaftLog.applied, rn.Raft.RaftLog.FirstIndex())
 		if rn.Raft.RaftLog.applied > rn.Raft.RaftLog.committed {
 			log.Panicf("rn.Raft.RaftLog.applied: %d > rn.Raft.RaftLog.committed: %d\n", rn.Raft.RaftLog.applied, rn.Raft.RaftLog.committed)
 		}
@@ -228,7 +229,12 @@ func (rn *RawNode) Advance(rd Ready) {
 		}
 	}
 
-	// todo snapshot
+	// snapshot
+	if !IsEmptySnap(&rd.Snapshot) {
+		if rn.Raft.RaftLog.pendingSnapshot != nil && rn.Raft.RaftLog.pendingSnapshot.Metadata.Index == rd.Snapshot.Metadata.Index {
+			rn.Raft.RaftLog.pendingSnapshot = nil
+		}
+	}
 	rn.Raft.msgs = make([]pb.Message, 0)
 }
 
