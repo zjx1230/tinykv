@@ -590,19 +590,6 @@ func (r *Raft) handleTransferLeader(m pb.Message) {
 				MsgType: pb.MessageType_MsgTransferLeader,
 			})
 		}
-		//else {
-		//	for _, peerId := range r.peers {
-		//		if r.id == peerId {
-		//			continue
-		//		}
-		//
-		//		r.msgs = append(r.msgs, pb.Message{
-		//			From:    m.From,
-		//			To:      peerId,
-		//			MsgType: pb.MessageType_MsgTransferLeader,
-		//		})
-		//	}
-		//}
 		return
 	}
 

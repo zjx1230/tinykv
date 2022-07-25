@@ -68,7 +68,55 @@ func (d *peerMsgHandler) apply(rd raft.Ready, term uint64) {
 			if err != nil {
 				panic(err)
 			}
-			d.RaftGroup.ApplyConfChange(confChange)
+			var headerContext raft_cmdpb.RaftRequestHeader
+			err = headerContext.Unmarshal(confChange.Context)
+			if err != nil {
+				panic(err)
+			}
+
+			if headerContext.RegionId == d.regionId && headerContext.RegionEpoch.ConfVer < d.peerStorage.region.RegionEpoch.ConfVer { // duplicate
+				continue
+			}
+
+			d.peerStorage.region.RegionEpoch.ConfVer++
+			if confChange.ChangeType == pb.ConfChangeType_AddNode {
+				d.peerStorage.region.Peers = append(d.peerStorage.region.Peers, &metapb.Peer{
+					Id:      confChange.NodeId,
+					StoreId: d.storeID(),
+				})
+
+				d.RaftGroup.ApplyConfChange(confChange)
+
+				d.ctx.storeMeta.Lock()
+				d.ctx.storeMeta.regions[confChange.NodeId] = &metapb.Region{
+					Id:          confChange.NodeId,
+					StartKey:    d.Region().StartKey,
+					EndKey:      d.Region().EndKey,
+					RegionEpoch: d.peerStorage.region.RegionEpoch,
+					Peers:       d.peerStorage.region.Peers,
+				}
+				d.ctx.storeMeta.Unlock()
+			} else if confChange.ChangeType == pb.ConfChangeType_RemoveNode {
+				index := uint64(0)
+				for _, p := range d.peerStorage.region.Peers {
+					if p.Id == confChange.NodeId {
+						index = p.Id
+						break
+					}
+				}
+
+				pre := d.peerStorage.region.Peers[0:index]
+				after := d.peerStorage.region.Peers[index+1:]
+				d.peerStorage.region.Peers = make([]*metapb.Peer, 0)
+				d.peerStorage.region.Peers = append(d.peerStorage.region.Peers, pre...)
+				d.peerStorage.region.Peers = append(d.peerStorage.region.Peers, after...)
+
+				d.RaftGroup.ApplyConfChange(confChange)
+
+				if d.MaybeDestroy() {
+					d.destroyPeer()
+				}
+			}
 		} else {
 			meta.WriteRegionState(kvWB, d.Region(), rspb.PeerState_Normal)
 			meta.WriteApplyState(kvWB, d.regionId, d.peerStorage.applyState.AppliedIndex, &rspb.RaftTruncatedState{
@@ -173,13 +221,71 @@ func (d *peerMsgHandler) handleAdminRequest(requests *raft_cmdpb.RaftCmdRequest,
 			d.ScheduleCompactLog(adminRequest.CompactLog.CompactIndex) // 异步地清理掉底层数据库存储的RaftLog
 		}
 	case raft_cmdpb.AdminCmdType_ChangePeer:
+		if requests.Header.RegionId == d.regionId && requests.Header.RegionEpoch.ConfVer < d.Region().RegionEpoch.ConfVer {
+			break
+		}
+		headerContext, err := requests.Header.Marshal()
+		if err != nil {
+			panic(err)
+		}
+		err = d.RaftGroup.ProposeConfChange(pb.ConfChange{
+			ChangeType: adminRequest.ChangePeer.ChangeType,
+			NodeId:     adminRequest.ChangePeer.Peer.Id,
+			Context:    headerContext,
+		})
 
-	case raft_cmdpb.AdminCmdType_TransferLeader:
-
+		if err != nil {
+			panic(err)
+		}
 	case raft_cmdpb.AdminCmdType_Split:
+		// curRegion split into the left region and the right region
+		curRegion := d.peerStorage.region
+		curRegion.RegionEpoch.Version++
+		leftRegion := &metapb.Region{
+			Id:          curRegion.Id,
+			StartKey:    curRegion.StartKey,
+			EndKey:      adminRequest.Split.SplitKey,
+			RegionEpoch: curRegion.RegionEpoch,
+			Peers:       curRegion.Peers,
+		}
 
+		newPeers := make([]*metapb.Peer, 0)
+		for i := range adminRequest.Split.NewPeerIds {
+			newPeers = append(newPeers, &metapb.Peer{
+				Id:      adminRequest.Split.NewPeerIds[i],
+				StoreId: d.storeID(),
+			})
+		}
+		rightRegion := &metapb.Region{
+			Id:       adminRequest.Split.NewRegionId,
+			StartKey: adminRequest.Split.SplitKey,
+			EndKey:   curRegion.EndKey,
+			RegionEpoch: &metapb.RegionEpoch{
+				ConfVer: curRegion.RegionEpoch.ConfVer,
+				Version: curRegion.RegionEpoch.Version,
+			},
+			Peers: newPeers,
+		}
+		newPeer, err := createPeer(d.storeID(), d.ctx.cfg, d.ctx.regionTaskSender, d.ctx.engine, rightRegion)
+		if err != nil {
+			panic(err)
+		}
+		d.ctx.storeMeta.setRegion(rightRegion, newPeer)
+		d.ctx.storeMeta.setRegion(leftRegion, d.peer)
+		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: leftRegion})
+		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: rightRegion})
+		d.ctx.router.register(newPeer)
+		d.ctx.router.register(d.peer)
+		resp.Split = &raft_cmdpb.SplitResponse{
+			Regions: []*metapb.Region{
+				leftRegion,
+				rightRegion,
+			},
+		}
 	case raft_cmdpb.AdminCmdType_InvalidAdmin:
 
+	case raft_cmdpb.AdminCmdType_TransferLeader:
+		fmt.Printf("do nothing")
 	default:
 		log.Panicf("unknown cmd type: %v\n", adminRequest.CmdType)
 	}
@@ -276,6 +382,14 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	// Your Code Here (2B).
 	if msg.AdminRequest != nil && msg.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_TransferLeader {
 		d.RaftGroup.TransferLeader(msg.AdminRequest.TransferLeader.Peer.Id)
+		cb.Done(&raft_cmdpb.RaftCmdResponse{
+			Header: &raft_cmdpb.RaftResponseHeader{
+				CurrentTerm: d.Term(),
+			},
+			AdminResponse: &raft_cmdpb.AdminResponse{
+				CmdType: raft_cmdpb.AdminCmdType_TransferLeader,
+			},
+		})
 		return
 	}
 
