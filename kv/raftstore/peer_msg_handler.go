@@ -62,6 +62,13 @@ func (d *peerMsgHandler) apply(rd raft.Ready, term uint64) {
 				cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
 			}
 			cb.Done(resp)
+		} else if entry.EntryType == pb.EntryType_EntryConfChange {
+			var confChange pb.ConfChange
+			err := confChange.Unmarshal(entry.Data)
+			if err != nil {
+				panic(err)
+			}
+			d.RaftGroup.ApplyConfChange(confChange)
 		} else {
 			meta.WriteRegionState(kvWB, d.Region(), rspb.PeerState_Normal)
 			meta.WriteApplyState(kvWB, d.regionId, d.peerStorage.applyState.AppliedIndex, &rspb.RaftTruncatedState{
@@ -267,6 +274,11 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+	if msg.AdminRequest != nil && msg.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_TransferLeader {
+		d.RaftGroup.TransferLeader(msg.AdminRequest.TransferLeader.Peer.Id)
+		return
+	}
+
 	d.ctx.storeMeta.Lock()
 	d.proposals = append(d.proposals, &proposal{
 		index: d.RaftGroup.Raft.RaftLog.LastIndex() + 1,

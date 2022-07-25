@@ -45,6 +45,11 @@ func IsEmptyHardState(st pb.HardState) bool {
 	return isHardStateEqual(st, pb.HardState{})
 }
 
+// IsEmptySoftState returns true if the given SoftState is empty.
+func IsEmptySoftState(st *SoftState) bool {
+	return st == nil || (st.Lead == None && st.RaftState == StateFollower)
+}
+
 // IsEmptySnap returns true if the given Snapshot is empty.
 func IsEmptySnap(sp *pb.Snapshot) bool {
 	if sp == nil || sp.Metadata == nil {

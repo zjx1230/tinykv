@@ -169,6 +169,11 @@ func (rn *RawNode) Ready() Ready {
 		rd.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
 	}
 
+	softState := rn.Raft.getSoftState()
+	if !IsEmptySoftState(softState) {
+		rd.SoftState = softState
+	}
+
 	hardState := rn.Raft.getHardState()
 	if !IsEmptyHardState(*hardState) && !isHardStateEqual(*rn.prevHardState, *hardState) {
 		rd.HardState = *hardState
