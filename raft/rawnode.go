@@ -237,6 +237,7 @@ func (rn *RawNode) Advance(rd Ready) {
 	// snapshot
 	if !IsEmptySnap(&rd.Snapshot) {
 		if rn.Raft.RaftLog.pendingSnapshot != nil && rn.Raft.RaftLog.pendingSnapshot.Metadata.Index == rd.Snapshot.Metadata.Index {
+			//rn.Raft.RaftLog.maybeCompact()
 			rn.Raft.RaftLog.pendingSnapshot = nil
 		}
 	}

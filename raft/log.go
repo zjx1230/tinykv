@@ -56,6 +56,8 @@ type RaftLog struct {
 
 	// Your Data Here (2A).
 	dummyIndex uint64
+
+	dummyTerm uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
@@ -91,6 +93,11 @@ func newLog(storage Storage) *RaftLog {
 	raftLog.committed = firstIndex - 1
 	raftLog.applied = firstIndex - 1
 	raftLog.dummyIndex = firstIndex - 1
+	raftLog.dummyTerm, err = storage.Term(raftLog.dummyIndex)
+	if err != nil {
+		panic(err)
+	}
+	//fmt.Printf("raftLog.dummyIndex: %d, raftLog.dummyTerm: %d\n", raftLog.dummyIndex, raftLog.dummyTerm)
 	return raftLog
 }
 
@@ -125,6 +132,11 @@ func (l *RaftLog) findConflictIndex(index uint64, logTerm uint64) uint64 {
 	if index > l.LastIndex() {
 		panic("index > l.LastIndex()")
 	}
+
+	//if index == l.FirstIndex()-1 {
+	//	return l.FirstIndex() - 1
+	//}
+
 	for {
 		term, err := l.Term(index)
 		if term <= logTerm || err != nil {
@@ -284,17 +296,6 @@ func (l *RaftLog) FirstIndex() uint64 {
 	}
 
 	return l.dummyIndex + 1
-
-	//firstIndex, err := l.storage.FirstIndex()
-	//if err == nil {
-	//	return firstIndex
-	//}
-
-	//if len(l.entries) == 0 {
-	//	return l.dummyIndex + 1
-	//}
-	//fmt.Printf("index: %d\n", l.entries[0].Index+1)
-	//return l.entries[0].Index + 1
 }
 
 // LastIndex return the last index of the log entries
@@ -304,12 +305,6 @@ func (l *RaftLog) LastIndex() uint64 {
 		if l.pendingSnapshot != nil {
 			return l.pendingSnapshot.Metadata.Index
 		} else {
-			//panic("no entries")
-			//lastIndex, err := l.storage.LastIndex()
-			//if err != nil {
-			//	panic(err)
-			//}
-			//return lastIndex
 			return l.dummyIndex
 		}
 	}
@@ -335,12 +330,17 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 		return 0, nil
 	}
 
+	if i == l.dummyIndex {
+		return l.dummyTerm, nil
+	}
+
 	if len(l.entries) == 0 {
 		//term, err := l.storage.Term(i)
 		//if err == nil {
 		//	return term, err
 		//}
-		return 0, errors.New(fmt.Sprintf("len(l.entries) == 0, i: %d, dummyIndex: %d, lastIndex: %d\n", i, dummyIndex, lastIndex))
+		return l.dummyTerm, nil
+		//return 0, errors.New(fmt.Sprintf("len(l.entries) == 0, i: %d, dummyIndex: %d, lastIndex: %d\n", i, dummyIndex, lastIndex))
 	}
 
 	offset := l.entries[0].Index

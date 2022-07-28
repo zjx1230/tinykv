@@ -324,23 +324,32 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	if len(entries) == 0 {
 		return nil
 	}
-	lastIndex, _ := ps.LastIndex()
-	if entries[len(entries)-1].Index <= lastIndex {
+
+	preFirstIndex, _ := ps.FirstIndex()
+	preLastIndex, _ := ps.LastIndex()
+	lastIndex := entries[len(entries)-1].Index
+	firstIndex := entries[0].Index
+	if lastIndex < preFirstIndex {
 		return nil
 	}
 
-	if entries[0].Index > lastIndex+1 {
-		return nil
+	if preFirstIndex > firstIndex {
+		entries = entries[preFirstIndex-firstIndex+1:]
 	}
 
-	entries = entries[lastIndex-entries[0].Index+1:]
 	for i := range entries {
 		err := raftWB.SetMeta(meta.RaftLogKey(ps.region.Id, entries[i].Index), &entries[i])
 		if err != nil {
 			return err
 		}
 	}
-	ps.raftState.LastIndex = entries[len(entries)-1].Index
+
+	if preLastIndex > lastIndex {
+		for i := lastIndex + 1; i <= preLastIndex; i++ {
+			raftWB.DeleteMeta(meta.RaftLogKey(ps.region.Id, i))
+		}
+	}
+	ps.raftState.LastIndex = lastIndex
 	ps.raftState.LastTerm = entries[len(entries)-1].Term
 	return nil
 }
@@ -353,21 +362,23 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		return nil, err
 	}
 
+	//fmt.Printf("snapshot.Metadata.Index: %d, ps.applyState.TruncatedState.Index: %d, len(ps.region.Peers): %d\n", snapshot.Metadata.Index, ps.applyState.TruncatedState.Index, len(ps.region.Peers))
+
 	// Hint: things need to do here including: update peer storage state like raftState and applyState, etc,
 	// and send RegionTaskApply task to region worker through ps.regionSched, also remember call ps.clearMeta
 	// and ps.clearExtraData to  delete stale data
 	// Your Code Here (2C).
-	res := new(ApplySnapResult)
 	if snapshot.Metadata.Index >= ps.applyState.TruncatedState.Index && ps.isInitialized() {
-		res.PrevRegion = ps.region
 		err := ps.clearMeta(kvWB, raftWB)
 		if err != nil {
 			return nil, err
 		}
 		ps.clearExtraData(snapData.Region)
-		res.Region = snapData.Region
-		ps.region = snapData.Region
+	}
 
+	var res *ApplySnapResult
+	if snapshot.Metadata.Index >= ps.applyState.TruncatedState.Index {
+		res = &ApplySnapResult{PrevRegion: ps.region, Region: snapData.Region}
 		ps.applyState.TruncatedState.Index = snapshot.Metadata.Index
 		ps.applyState.TruncatedState.Term = snapshot.Metadata.Term
 		if snapshot.Metadata.Index > ps.applyState.AppliedIndex {
@@ -381,7 +392,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 			ps.raftState.LastTerm = snapshot.Metadata.Term
 		}
 
-		err = raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+		err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
 		if err != nil {
 			return nil, err
 		}
@@ -403,14 +414,14 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 
 // Save memory states to disk.
 // Do not modify ready in this function, this is a requirement to advance the ready object properly later.
-func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
+func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (res *ApplySnapResult, err error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
 	// ApplySnapshot
 	raftWB := new(engine_util.WriteBatch)
 	if !raft.IsEmptySnap(&ready.Snapshot) {
 		kvWB := new(engine_util.WriteBatch)
-		res, err := ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
+		res, err = ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
 		if err != nil {
 			return res, err
 		}
@@ -421,7 +432,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		ps.raftState.HardState = &ready.HardState
 	}
 
-	err := ps.Append(ready.Entries, raftWB)
+	err = ps.Append(ready.Entries, raftWB)
 	if err != nil {
 		return nil, err
 	}
@@ -431,7 +442,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		return nil, err
 	}
 	raftWB.MustWriteToDB(ps.Engines.Raft)
-	return nil, nil
+	return res, nil
 }
 
 func (ps *PeerStorage) ClearData() {
