@@ -384,7 +384,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		if snapshot.Metadata.Index > ps.applyState.AppliedIndex {
 			ps.applyState.AppliedIndex = snapshot.Metadata.Index
 		}
-		fmt.Printf("ApplySnapshot TruncatedState index: %d, term: %d\n", snapshot.Metadata.Index, snapshot.Metadata.Term)
+		//fmt.Printf("ApplySnapshot TruncatedState index: %d, term: %d\n", snapshot.Metadata.Index, snapshot.Metadata.Term)
 		meta.WriteApplyState(kvWB, snapData.Region.Id, ps.applyState.AppliedIndex, ps.applyState.TruncatedState)
 		ps.snapState.StateType = snap.SnapState_Applying
 		if snapshot.Metadata.Index >= ps.raftState.LastIndex {

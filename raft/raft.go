@@ -226,12 +226,12 @@ func newRaft(c *Config) *Raft {
 		}
 	}
 
-	if _, ok := raft.Prs[raft.id]; !ok {
-		raft.Prs[raft.id] = &Progress{
-			Match: lastIndex,
-			Next:  lastIndex + 1,
-		}
-	}
+	//if _, ok := raft.Prs[raft.id]; !ok {
+	//	raft.Prs[raft.id] = &Progress{
+	//		Match: lastIndex,
+	//		Next:  lastIndex + 1,
+	//	}
+	//}
 	raft.electionTimeout = raft.electionTick + rand.Intn(10000)%c.ElectionTick
 	raft.RaftLog.applied = max(raft.RaftLog.applied, c.Applied)
 	return raft
@@ -277,8 +277,10 @@ func (r *Raft) appendEntries(ents ...pb.Entry) uint64 {
 	}
 
 	lastIndex = r.RaftLog.appendEntries(ents...)
-	r.Prs[r.id].Next = max(r.Prs[r.id].Next, lastIndex+1)
-	r.Prs[r.id].Match = r.Prs[r.id].Next - 1
+	if _, ok := r.Prs[r.id]; ok {
+		r.Prs[r.id].Next = max(r.Prs[r.id].Next, lastIndex+1)
+		r.Prs[r.id].Match = r.Prs[r.id].Next - 1
+	}
 	return lastIndex
 }
 
@@ -317,7 +319,6 @@ func (r *Raft) sendSnapshot(to uint64) {
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	if r.State != StateLeader {
-		fmt.Printf("Not StateLeader\n")
 		return false
 	}
 

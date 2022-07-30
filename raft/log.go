@@ -161,14 +161,10 @@ func (l *RaftLog) appendEntries(ents ...pb.Entry) uint64 {
 		l.entries = append(l.entries, ents...)
 	} else {
 		isTheSame := true // 判断append中重叠的日志是否发生冲突，如果冲突则删除后续原本没被覆盖剩下的日志，否则保留
-		var term1, term2, index1 uint64
 		for _, e := range ents {
 			if e.Index <= l.LastIndex() {
 				term, err := l.Term(e.Index)
 				if err != nil || term != e.Term {
-					term1 = term
-					term2 = e.Term
-					index1 = e.Index
 					isTheSame = false
 					break
 				}
@@ -189,9 +185,9 @@ func (l *RaftLog) appendEntries(ents ...pb.Entry) uint64 {
 			panic("l.committed > l.LastIndex()")
 		}
 
-		if l.stabled > l.LastIndex() {
-			fmt.Printf("len(l.entries): %d, term1: %d, term2: %d, index1: %d, isTheSame: %v, l.stabled: %d, l.LastIndex(): %d\n", len(l.entries), term1, term2, index1, isTheSame, l.stabled, l.LastIndex())
-		}
+		//if l.stabled > l.LastIndex() {
+		//	fmt.Printf("len(l.entries): %d, term1: %d, term2: %d, index1: %d, isTheSame: %v, l.stabled: %d, l.LastIndex(): %d\n", len(l.entries), term1, term2, index1, isTheSame, l.stabled, l.LastIndex())
+		//}
 
 		firstIndex, err := l.storage.FirstIndex()
 		if err != nil {

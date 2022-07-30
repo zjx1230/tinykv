@@ -125,7 +125,7 @@ func (d *peerMsgHandler) apply(rd raft.Ready, term uint64) {
 			}
 
 			if confChange.ChangeType == pb.ConfChangeType_AddNode {
-				fmt.Printf("ConfChangeType_AddNode\n")
+				//fmt.Printf("ConfChangeType_AddNode\n")
 				if d.findPeerIndex(confChange.NodeId) == -1 {
 					d.peerStorage.region.RegionEpoch.ConfVer++
 					d.peerStorage.region.Peers = append(d.peerStorage.region.Peers, context.AdminRequest.ChangePeer.Peer)
@@ -135,7 +135,7 @@ func (d *peerMsgHandler) apply(rd raft.Ready, term uint64) {
 					d.insertPeerCache(context.AdminRequest.ChangePeer.Peer)
 				}
 			} else if confChange.ChangeType == pb.ConfChangeType_RemoveNode {
-				fmt.Printf("ConfChangeType_RemoveNode\n")
+				//fmt.Printf("ConfChangeType_RemoveNode\n")
 				if d.MaybeDestroy() && confChange.NodeId == d.PeerId() {
 					d.destroyPeer()
 					return
